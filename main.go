@@ -1,70 +1,74 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"log"
+	"io"
 	"net/http"
 
+	"encoding/json"
+
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
+	"github.com/jinzhu/gorm"
+	_ "github.com/jinzhu/gorm/dialects/mysql"
+	log "github.com/sirupsen/logrus"
 )
 
+var db, _ = gorm.Open("mysql", "root:test1234@/todolist?charset=utf8&parseTime=True&loc=Local")
+
 type Tasks struct {
-	ID              string `json:"id"`
-	TaskName        string `json:"task_name"`
-	TaskDescription string `json:"task_description"`
-	Date            string `json:"date"`
+	Id          int `gorm:"primary_key"`
+	Name        string
+	Description string
+	Completed   bool
 }
 
-var tasks []Tasks
-
-func allTasks() {
-	task1 := Tasks{
-		ID:              "1",
-		TaskName:        "Task 1",
-		TaskDescription: "Task 1 Description",
-		Date:            "2020-01-01",
-	}
-	tasks = append(tasks, task1)
-	task2 := Tasks{
-		ID:              "2",
-		TaskName:        "Task 2",
-		TaskDescription: "Task 2 Description",
-		Date:            "2020-01-01",
-	}
-	tasks = append(tasks, task2)
-	fmt.Println("Your tasks are: ", tasks)
-}
-
-func getTasks(w http.ResponseWriter, r *http.Request) {
+func ListTasks(w http.ResponseWriter, r *http.Request) {
+	log.Info("Get all Tasks")
+	tasks := GetTasks()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(tasks)
 }
 
-func getTask(w http.ResponseWriter, r *http.Request) {
-	taskId := mux.Vars(r)["id"]
-	flag := false
-	for _, task := range tasks {
-		if task.ID == taskId {
-			flag = true
-			json.NewEncoder(w).Encode(task)
-			break
-		}
-	}
-	if !flag {
-		json.NewEncoder(w).Encode(map[string]string{"error": "Task not found"})
-	}
+func GetTasks() interface{} {
+	var tasks []Tasks
+	results := db.Find(&tasks).Value
+	return results
+}
+
+func CreateTask(w http.ResponseWriter, r *http.Request) {
+	description := r.FormValue("description")
+	log.WithFields(log.Fields{"description": description}).Info("Add new TodoItem. Saving to database.")
+	task := &Tasks{Description: description, Completed: false}
+	db.Create(&task)
+	result := db.Last(&task)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result.Value)
+}
+
+func Healthz(w http.ResponseWriter, r *http.Request) {
+	log.Info("API Health is OK")
+	w.Header().Set("Content-Type", "application/json")
+	io.WriteString(w, `{"alive": true}`)
 }
 
 func handleRoutes() {
 	router := mux.NewRouter()
-	router.HandleFunc("/tasks", getTasks).Methods("GET")
-	router.HandleFunc("/tasks/{id}", getTask).Methods("GET")
+	router.HandleFunc("/healthz", Healthz).Methods("GET")
+	router.HandleFunc("/tasks", ListTasks).Methods("GET")
+	router.HandleFunc("/tasks", CreateTask).Methods("POST")
 	log.Fatal(http.ListenAndServe(":8080", router))
 }
 
+func init() {
+	log.SetFormatter(&log.TextFormatter{})
+	log.SetReportCaller(true)
+}
+
 func main() {
-	allTasks()
-	fmt.Println("Task Management API...")
+	defer db.Close()
+
+	db.Debug().DropTableIfExists(&Tasks{})
+	db.Debug().AutoMigrate(&Tasks{})
+	log.Info("Starting Task Management API server...")
 	handleRoutes()
 }
